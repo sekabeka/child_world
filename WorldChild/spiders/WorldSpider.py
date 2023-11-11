@@ -9,7 +9,7 @@ class ChildWorld(scrapy.Spider):
     unique = 0
 
     def start_requests(self):
-        p = pd.read_excel('E:\proga\world-child\WorldChild\WorldChild\Ссылки детмир.xlsx').to_dict('list')
+        p = pd.read_excel('E:\proga\world-child\WorldChild\WorldChild\Ссылки_детмир.xlsx').to_dict('list')
         start_urls = p['Ссылки на категории товаров']
         roots_categories = p['Корневая']
         add_categories = p['Подкатегория 1']
@@ -30,15 +30,17 @@ class ChildWorld(scrapy.Spider):
 
     def ReceiveInfo(self, response, **kwargs):
         soup = BeautifulSoup(response.text, 'lxml')
-        brand = soup.find('span', attrs={'data-testid' : 'brandName'}).text.strip()
+        #brand = soup.find('span', attrs={'data-testid' : 'brandName'}).text.strip()
         title = soup.find('h1', attrs={'data-testid' : 'productTitle'}).text.strip()
         div_contain_sections = soup.find('div', attrs={'data-testid' : 'productSections'})
         for count, section in enumerate(div_contain_sections.find_all('section', recursive=False)):
             match count:
                 case 0:
                     pictures = section.find_all("picture")
-                    images = ' '.join([i.source['srcset'] for i in pictures])
-                    images = re.sub(r'(\d+x) | (\d+x,)', '', images)
+                    images = []
+                    for item in [i.source["srcset"] for i in pictures]:
+                        images.append(re.search(r'(.+?webp)', item)[0])
+                    images = ' '.join(images)
                 case 1:
                     ul = section.find('ul')
                     if ul:
@@ -80,12 +82,11 @@ class ChildWorld(scrapy.Spider):
                             tmp[name] = prop
                     else:
                         pass
-        self.logger.info(f'we have {self.unique} items')
         
         return {
             'Категория' : kwargs.pop('root_category'),
             'Подкатегория' : kwargs.pop('add_category'),
-            'Артикул' : kwargs.pop('prefix') + article,
+            'Артикул' : kwargs.pop('prefix') + tmp['Параметр: Код товара'],
             'Название товара или услуги' : title,
             'Размещение на сайте' : kwargs.pop('placement'),
             'Описание товара' : description,
@@ -94,8 +95,8 @@ class ChildWorld(scrapy.Spider):
             'Старая цена' : format(float((1 + int(sale_size) / 100) * 2 * float(price.replace(',', '.'))), '.2f').replace('.', ',') if price != 'Нет в наличии' and sale_size != None and sale_size else None,
             'Цена закупки' : price.replace('.', ','),
             'Изображения' : images,
-            'Параметр: Бренд' : brand,
-            'Параметр: Производитель' : brand,
+            #'Параметр: Бренд' : brand,
+            #'Параметр: Производитель' : brand,
             'Параметр: Артикул поставщика' : article,
             'Параметр: Размер скидки' : sale_size,
             'Параметр: Метки' : markers,
@@ -141,7 +142,7 @@ class ChildWorld(scrapy.Spider):
                 link = prod.find(href=re.compile(r'.*?www\.detmir\.ru.*'))['href']
                 if prod.find(string=re.compile(r'Товар закончился|Только в розничных магазинах')):
                     self.logger.error(f'We have no available products {response.url, products.index(prod)}')
-                    break
+                    return
                 yield scrapy.Request(link, callback=self.handler, cb_kwargs=kwargs)
         
         if soup.find(string=re.compile(r"показать ещё", flags=re.I)):
@@ -164,7 +165,7 @@ class ChildWorld(scrapy.Spider):
         p = pd.DataFrame(result)
         with pd.ExcelWriter('child.xlsx', engine='xlsxwriter', engine_kwargs={'options' : {'strings_to_urls': False}}) as writer:
             p.to_excel(writer, index=False, sheet_name='products')
-            p = p.drop_duplicates(['Параметр: Артикул поставщика'])
+            p = p.drop_duplicates(['Параметр: Код товара'])
             p.to_excel(writer, index=False, sheet_name='unique_products')
             for name in roots:
                 tmp = []
