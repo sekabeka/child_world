@@ -12,13 +12,14 @@ class ChildWorld(scrapy.Spider):
         p = pd.read_excel('E:\proga\world-child\WorldChild\WorldChild\Ссылки_детмир.xlsx').to_dict('list')
         start_urls = p['Ссылки на категории товаров']
         roots_categories = p['Корневая']
-        add_categories = p['Подкатегория 1']
+        add_categories, add2_categories = p['Подкатегория 1'], p['Подкатегория 2']
         placements = p['Размещение на сайте']
         prefixs = p['Префиксы']
-        for url, root, add, pref, place in zip(start_urls, roots_categories, add_categories, prefixs, placements):
+        for url, root, add, add2, pref, place in zip(start_urls, roots_categories, add_categories, add2_categories, prefixs, placements):
             kwargs = {
                 'root_category' : root,
                 'add_category' : add,
+                'add2_category' : add2 if add2 else None,
                 'prefix' : pref,
                 'placement' : place,
                 'page' : 1,
@@ -30,7 +31,7 @@ class ChildWorld(scrapy.Spider):
 
     def ReceiveInfo(self, response, **kwargs):
         soup = BeautifulSoup(response.text, 'lxml')
-        #brand = soup.find('span', attrs={'data-testid' : 'brandName'}).text.strip()
+        brand = soup.find(attrs={'data-testid' : 'moreProductsItem'}).a.text.strip()
         title = soup.find('h1', attrs={'data-testid' : 'productTitle'}).text.strip()
         div_contain_sections = soup.find('div', attrs={'data-testid' : 'productSections'})
         for count, section in enumerate(div_contain_sections.find_all('section', recursive=False)):
@@ -77,6 +78,8 @@ class ChildWorld(scrapy.Spider):
                                     name, prop = (f'Параметр: Страна-производитель', it.td.text.strip())
                                 case 'продавец':
                                     continue
+                                case 'вес упаковки, кг':
+                                    name, prop = ('Параметр: Вес', it.td.text.strip().replace('.', ','))
                                 case _ :
                                     name, prop = (f'Параметр: {it.th.text.strip()}', it.td.text.strip())
                             tmp[name] = prop
@@ -85,21 +88,25 @@ class ChildWorld(scrapy.Spider):
         
         return {
             'Категория' : kwargs.pop('root_category'),
-            'Подкатегория' : kwargs.pop('add_category'),
+            'Подкатегория 1' : kwargs.pop('add_category'),
+            "Подкатегория 2" : kwargs.pop('add2_category'),
             'Артикул' : kwargs.pop('prefix') + tmp['Параметр: Код товара'],
             'Название товара или услуги' : title,
             'Размещение на сайте' : kwargs.pop('placement'),
-            'Описание товара' : description,
+            'Полное описание' : description,
             'Ссылка на товар' : response.url,
             'Цена продажи' : None,
-            'Старая цена' : format(float((1 + int(sale_size) / 100) * 2 * float(price.replace(',', '.'))), '.2f').replace('.', ',') if price != 'Нет в наличии' and sale_size != None and sale_size else None,
+            'Старая цена' : format(float((1 + int(sale_size) / 100) * 1.6 * float(price.replace(',', '.'))), '.2f').replace('.', ',') if price != 'Нет в наличии' and sale_size != None and sale_size else None,
             'Цена закупки' : price.replace('.', ','),
             'Изображения' : images,
-            #'Параметр: Бренд' : brand,
-            #'Параметр: Производитель' : brand,
+            'Параметр: Остаток' : 100 if price != 'Нет в наличии' else 0,
+            'Параметр: Бренд' : brand,
+            'Параметр: Производитель' : brand,
             'Параметр: Артикул поставщика' : article,
             'Параметр: Размер скидки' : sale_size,
             'Параметр: Метки' : markers,
+            'Параметр: Deti' : 'Deti',
+            'Параметр: Group' : None,
             **kwargs, **tmp
         }
         
@@ -116,10 +123,10 @@ class ChildWorld(scrapy.Spider):
                 variants = [('https://www.detmir.ru' + i['href'], i.text.strip()) for i in soup.find('div', attrs={'data-testid' : 'variantsBlock'}).find_all('a', attrs={'data-testid' : 'variantsItem'})]
             for url, var in variants:
                 if url != response.url:
-                    kwargs["Свойство: вариант"] = var
+                    kwargs["Свойство: Вариант"] = var
                     yield scrapy.Request(url, callback=self.ReceiveInfo, cb_kwargs=kwargs)
                 else:
-                    kwargs["Свойство: вариант"] = var
+                    kwargs["Свойство: Вариант"] = var
                     yield self.ReceiveInfo(response=response, **kwargs)
         else:
             yield self.ReceiveInfo(response=response, **kwargs)
@@ -161,16 +168,34 @@ class ChildWorld(scrapy.Spider):
         with open('E:\proga\world-child\WorldChild\child.jsonl', 'r', encoding='utf-8') as file:
             s = file.readlines()
         result = [json.loads(item) for item in s]
-        roots = set([i['Категория'] for i in result])
+        roots = set([i['Подкатегория 1'] for i in result])
         p = pd.DataFrame(result)
         with pd.ExcelWriter('child.xlsx', engine='xlsxwriter', engine_kwargs={'options' : {'strings_to_urls': False}}) as writer:
             p.to_excel(writer, index=False, sheet_name='products')
-            p = p.drop_duplicates(['Параметр: Код товара'])
-            p.to_excel(writer, index=False, sheet_name='unique_products')
+            main_headers = [
+                'Название товара или услуги',
+                'Цена закупки',
+                'Старая цена',
+                'Артикул',
+                'Параметр: Размер скидки',
+                'Параметр: Остаток',
+                'Цена продажи',
+                'Параметр: Deti',
+                'Параметр: Group'
+            ]
+            r = []
+            for item in result:
+                tmp = {}
+                for key in item.keys():
+                    if key in main_headers:
+                        tmp[key] = item[key]
+                r.append(tmp)
+            p = pd.DataFrame(r)
+            p.to_excel(writer, sheet_name='short_prod', index=False)
             for name in roots:
                 tmp = []
                 for prod in result:
-                    if prod['Категория'] == name:
+                    if prod['Подкатегория 1'] == name:
                         tmp.append(prod)
                 df = pd.DataFrame(tmp)
                 df.to_excel(writer, index=False, sheet_name=name)
